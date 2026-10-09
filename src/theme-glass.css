@@ -402,3 +402,9 @@
 .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0006; transition: transform .3s cubic-bezier(.34, 1.56, .64, 1); }
 .toggle.on { background: var(--green); }
 .toggle.on::after { transform: translateX(16px); }
+
+/* keep scrollbars clear of the rounded panel corners, and only show them while the pointer is over the panel */
+[data-theme="glass"] ::-webkit-scrollbar-track { margin-block: 22px; }
+[data-theme="glass"] :is(.sidebar, .queue-scroll, .scroll, .overview-side)::-webkit-scrollbar-thumb { background-color: transparent; }
+[data-theme="glass"] :is(.sidebar, .queue-scroll, .scroll, .overview-side):hover::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, .25); }
+[data-theme="glass"] :is(.sidebar, .queue-scroll, .scroll, .overview-side)::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, .4); }
