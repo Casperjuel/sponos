@@ -147,6 +147,10 @@ button.chip:hover { color: var(--text); background: var(--hover); }
 .mood-change .btn { color: var(--text); border: 1px solid var(--line); }
 .mood-change input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--text); font: inherit; user-select: text; }
 .mood .setup-error { margin-bottom: 12px; }
+.poo-rain { position: fixed; inset: 0; z-index: 60; pointer-events: none; overflow: hidden; }
+.poo-rain span { position: absolute; top: -60px; animation: poo-fall 3s linear both; }
+@keyframes poo-fall { to { transform: translateY(calc(100vh + 120px)) rotate(240deg); } }
+@media (prefers-reduced-motion: reduce) { .poo-rain { display: none; } }
 /* the wait has the shape of the playlist it becomes */
 .skel {
   display: block; border-radius: 6px; animation: shimmer 1.5s linear infinite; background-size: 220% 100%;

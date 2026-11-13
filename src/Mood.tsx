@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import { api, fmt, trackKey, type AiFollowUp, type AiPick, type AiPlaylist, type AiProgress, type AiStatus, type QueueMode, type SpItem } from "./api";
@@ -47,6 +48,46 @@ const recent = {
   },
 };
 
+/** Easter egg: mention Søren anywhere and there is only one band. No AI involved. */
+const SOREN = /(^|[^\p{L}])s[øöo]ren([^\p{L}]|$)/iu;
+const OASIS = ["Wonderwall", "Don't Look Back in Anger", "Champagne Supernova", "Live Forever", "Stop Crying Your Heart Out"];
+
+async function oasis(): Promise<AiPlaylist> {
+  const found = await Promise.all(
+    OASIS.map((title) =>
+      api.search(`${title} Oasis`).then((r) => r.tracks.find((t) => /oasis/i.test(t.subtitle)) ?? null, () => null)),
+  );
+  const tracks = found.filter((t): t is SpItem => !!t);
+  if (!tracks.length) throw "Spotify couldn't find Oasis. Søren is devastated.";
+  return {
+    title: "Søren's Choice",
+    description: "You said Søren. There was never going to be anything but Oasis.",
+    tracks,
+    picks: tracks.map((t) => ({ title: t.name, artist: "Oasis" })),
+    missing: OASIS.length - tracks.length,
+  };
+}
+
+function PooRain({ onDone }: { onDone: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 7000);
+    return () => clearTimeout(t);
+  }, []);
+  return createPortal(
+    <div className="poo-rain" aria-hidden>
+      {Array.from({ length: 48 }, (_, i) => (
+        <span key={i} style={{
+          left: `${(i * 61) % 100}%`,
+          fontSize: 22 + ((i * 13) % 26),
+          animationDelay: `${((i * 37) % 30) / 10}s`,
+          animationDuration: `${2.6 + ((i * 7) % 14) / 10}s`,
+        }}>💩</span>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
 /** a playlist on its way: what was asked, then the songs Claude named, then each one as Spotify finds it */
 type Making = {
   prompt: string;
@@ -82,6 +123,7 @@ export function Inspiration({ ai, start, mood, setMood, playing, enqueue, enqueu
   const busy = !!making;
   const [error, setError] = useState<string | null>(null);
   const [recents, setRecents] = useState(recent.read);
+  const [raining, setRaining] = useState(false);
   const run = useRef(0);
 
   const make = async (prompt: string, changing?: Mood) => {
@@ -91,6 +133,15 @@ export function Inspiration({ ai, start, mood, setMood, playing, enqueue, enqueu
     setMaking({ prompt: request, changing: !!changing, since: Date.now(), found: {} });
     setError(null);
     try {
+      if (SOREN.test(request)) {
+        const playlist = await oasis();
+        if (run.current !== id) return;
+        setMood({ prompt: request, playlist });
+        setChange("");
+        setRaining(true);
+        enqueueMany(playlist.tracks, "now");
+        return;
+      }
       const playlist = await api.aiPlaylist(
         request,
         context(playing),
@@ -144,6 +195,7 @@ export function Inspiration({ ai, start, mood, setMood, playing, enqueue, enqueu
 
   return (
     <main className="browse mood">
+      {raining && <PooRain onDone={() => setRaining(false)} />}
       <div className="scroll">
         <button className="link back" onClick={onClose}><Icon.Back /> Back</button>
 
