@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/Casperjuel/sponos/compare/v0.14.1...v0.14.2) (2026-11-13)
+
+
+### Miscellaneous Chores
+
+* a small surprise in the inspiration prompt ([b454e26](https://github.com/Casperjuel/sponos/commit/b454e26f57988cb87f3769c03d2ad15abe7e0b5e))
+
 ## [0.14.1](https://github.com/Casperjuel/sponos/compare/v0.14.0...v0.14.1) (2026-11-13)
 
 
