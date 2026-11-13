@@ -40,25 +40,34 @@ fn short_hash(label: &str, household: &str, value: &str) -> String {
     hex(&digest(label, &format!("{household}:{value}"))[..16])
 }
 
-fn cipher(household: &str) -> Aes256Gcm {
-    Aes256Gcm::new(&digest("key", household).into())
+fn cipher(label: &str, household: &str) -> Aes256Gcm {
+    Aes256Gcm::new(&digest(label, household).into())
 }
 
 fn encrypt(household: &str, plain: &[u8]) -> Res<Vec<u8>> {
-    use rand::RngExt;
-    let nonce: [u8; 12] = rand::rng().random();
-    let mut out = nonce.to_vec();
-    out.extend(cipher(household).encrypt(&Nonce::from(nonce), plain).map_err(|_| "encrypt failed")?);
-    Ok(out)
+    encrypt_as("key", household, plain)
 }
 
 fn decrypt(household: &str, data: &[u8]) -> Res<Vec<u8>> {
+    decrypt_as("key", household, data)
+}
+
+/// `label` picks the key: each kind of document has its own.
+fn encrypt_as(label: &str, household: &str, plain: &[u8]) -> Res<Vec<u8>> {
+    use rand::RngExt;
+    let nonce: [u8; 12] = rand::rng().random();
+    let mut out = nonce.to_vec();
+    out.extend(cipher(label, household).encrypt(&Nonce::from(nonce), plain).map_err(|_| "encrypt failed")?);
+    Ok(out)
+}
+
+fn decrypt_as(label: &str, household: &str, data: &[u8]) -> Res<Vec<u8>> {
     if data.len() < 12 {
         return Err("sync: short document".into());
     }
     let (nonce, body) = data.split_at(12);
     let nonce: [u8; 12] = nonce.try_into().map_err(|_| "sync: bad nonce")?;
-    cipher(household).decrypt(&Nonce::from(nonce), body).map_err(|_| "sync: can't decrypt".into())
+    cipher(label, household).decrypt(&Nonce::from(nonce), body).map_err(|_| "sync: can't decrypt".into())
 }
 
 fn seal_json<T: Serialize>(household: &str, value: &T) -> Res<String> {
@@ -137,6 +146,47 @@ pub async fn push(http: &reqwest::Client, household: &str, shared: &Shared) -> R
     }
     let v: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
     Ok(v["etag"].as_str().unwrap_or_default().to_string())
+}
+
+// ------------------------------------------------------------------ secrets
+
+/// Keys a system shares, such as the Anthropic API key for AI playlists. They
+/// live in a document of their own, under a different name and encryption key
+/// than the floorplan, so an app version that doesn't know about them can't
+/// overwrite them when it saves the floorplan.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct Secrets {
+    anthropic_key: Option<String>,
+}
+
+fn secrets_url(household: &str) -> String {
+    format!("{SYNC_URL}/plan?key={}", hex(&digest("secrets-doc", household)))
+}
+
+/// The system's shared Anthropic key, if someone saved one.
+pub async fn pull_ai_key(http: &reqwest::Client, household: &str) -> Res<Option<String>> {
+    let r = http.get(secrets_url(household)).timeout(Duration::from_secs(15)).send().await.map_err(|e| e.to_string())?;
+    match r.status().as_u16() {
+        404 => Ok(None),
+        200 => {
+            let body = r.bytes().await.map_err(|e| e.to_string())?;
+            let secrets: Secrets = serde_json::from_slice(&decrypt_as("secrets-key", household, &body)?).map_err(|e| e.to_string())?;
+            Ok(secrets.anthropic_key.filter(|k| !k.is_empty()))
+        }
+        s => Err(format!("sync: HTTP {s}")),
+    }
+}
+
+/// Share the key with the system; `None` takes it back for everyone.
+pub async fn push_ai_key(http: &reqwest::Client, household: &str, key: Option<&str>) -> Res<()> {
+    let secrets = Secrets { anthropic_key: key.map(str::to_string) };
+    let body = encrypt_as("secrets-key", household, &serde_json::to_vec(&secrets).map_err(|e| e.to_string())?)?;
+    let r = http.put(secrets_url(household)).body(body).timeout(Duration::from_secs(30)).send().await.map_err(|e| e.to_string())?;
+    if !r.status().is_success() {
+        return Err(format!("Couldn't share the key (HTTP {})", r.status()));
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ votes + added by
@@ -371,6 +421,12 @@ mod tests {
         assert!(back == s);
         assert!(decrypt("Sonos_other", &sealed).is_err(), "another household can't read it");
         assert_eq!(doc_key("Sonos_abc").len(), 64);
+        // secrets use their own document and key
+        assert!(!secrets_url("Sonos_abc").contains(&doc_key("Sonos_abc")));
+        let secret = encrypt_as("secrets-key", "Sonos_abc", b"sk-ant-x").unwrap();
+        assert!(decrypt("Sonos_abc", &secret).is_err(), "the floorplan key can't open the secrets");
+        assert_eq!(decrypt_as("secrets-key", "Sonos_abc", &secret).unwrap(), b"sk-ant-x");
+        assert!(decrypt_as("secrets-key", "Sonos_other", &secret).is_err());
         assert_eq!(short_hash("track", "Sonos_abc", "x").len(), 32);
     }
 

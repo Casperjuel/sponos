@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
-import { api, fmt, playModes, type Group, type MemberVol, type PlayerState } from "./api";
+import { api, fmt, playModes, type Group, type PlayerState } from "./api";
 import type { Run } from "./App";
 import * as Icon from "./icons";
 
@@ -8,6 +8,12 @@ type Props = {
   state: PlayerState | null;
   fetchedAt: MutableRefObject<number>;
   run: Run;
+  /** open (or close) the rooms panel under this button */
+  onRooms: (button: HTMLElement) => void;
+  roomsOpen: boolean;
+  /** the Inspiration page: describe the music, get a playlist */
+  onMood: () => void;
+  moodOpen: boolean;
   query: string;
   onQuery: (q: string) => void;
   onSettings: () => void;
@@ -42,7 +48,7 @@ export function usePosition(state: PlayerState | null, playing: boolean, fetched
   return { pos, dur };
 }
 
-export function TopBar({ group, state, fetchedAt, run, query, onQuery, onSettings, onMini, view, onToggleView }: Props) {
+export function TopBar({ group, state, fetchedAt, run, onRooms, roomsOpen, onMood, moodOpen, query, onQuery, onSettings, onMini, view, onToggleView }: Props) {
   const g = group?.id;
   const playing = state?.transport === "PLAYING" || state?.transport === "TRANSITIONING";
   const mode = playModes.decode(state?.playMode ?? "NORMAL");
@@ -51,7 +57,6 @@ export function TopBar({ group, state, fetchedAt, run, query, onQuery, onSetting
   const live = usePosition(state, playing, fetchedAt);
   const dur = live.dur;
   const pos = scrub ?? live.pos;
-  const [roomsOpen, setRoomsOpen] = useState(false);
 
   return (
     <header className="topbar" data-tauri-drag-region>
@@ -64,11 +69,13 @@ export function TopBar({ group, state, fetchedAt, run, query, onQuery, onSetting
           style={{ "--p": `${shownVol}%` } as React.CSSProperties}
           onChange={(e) => onVol(Number(e.target.value))} />
         <span className="vol-num">{shownVol}</span>
-        {group && group.members.length > 1 && (
-          <div className="pop-anchor">
-            <button className="chip" onClick={() => setRoomsOpen((o) => !o)}>{group.members.length} rooms</button>
-            {roomsOpen && <MemberVolumes groupId={group.id} onClose={() => setRoomsOpen(false)} />}
-          </div>
+        {group && (
+          <button className={`rooms-chip ${roomsOpen ? "on" : ""}`} data-rooms-trigger onClick={(e) => onRooms(e.currentTarget)}
+            title="Choose which rooms play together, and each room's volume">
+            <Icon.Speaker width={13} height={13} />
+            {group.members.length > 1 ? `${group.members.length} rooms` : "1 room"}
+            <span className="caret">▾</span>
+          </button>
         )}
       </div>
 
@@ -122,6 +129,9 @@ export function TopBar({ group, state, fetchedAt, run, query, onQuery, onSetting
             onKeyDown={(e) => e.key === "Escape" && onQuery("")} spellCheck={false} />
           {query && <button className="icon-btn xs" onClick={() => onQuery("")}><Icon.X /></button>}
         </label>
+        <button className={`icon-btn ${moodOpen ? "on" : ""}`} onClick={onMood} title="Inspiration: make a playlist from a sentence">
+          <Icon.Sparkle />
+        </button>
         <button className={`icon-btn ${view === "overview" ? "on" : ""}`} onClick={onToggleView}
           title={view === "overview" ? "Back to the player (⌘1)" : "Floorplan overview (⌘2)"}>
           {view === "overview" ? <Icon.Player /> : <Icon.Map />}
@@ -130,34 +140,5 @@ export function TopBar({ group, state, fetchedAt, run, query, onQuery, onSetting
         <button className="icon-btn" onClick={onSettings} title="Settings"><Icon.Gear /></button>
       </div>
     </header>
-  );
-}
-
-function MemberVolumes({ groupId, onClose }: { groupId: string; onClose: () => void }) {
-  const [members, setMembers] = useState<MemberVol[]>([]);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    api.members(groupId).then(setMembers).catch(() => {});
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose();
-    setTimeout(() => document.addEventListener("click", close));
-    return () => document.removeEventListener("click", close);
-  }, [groupId, onClose]);
-  return (
-    <div className="popover" ref={ref}>
-      {members.map((m) => (
-        <div key={m.uuid} className="member">
-          <span title={m.ip}>{m.name}</span>
-          <input type="range" className="slider" min={0} max={100} value={m.volume}
-            style={{ "--p": `${m.volume}%` } as React.CSSProperties}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setMembers((ms) => ms.map((x) => (x.uuid === m.uuid ? { ...x, volume: v } : x)));
-              api.setMemberVolume(m.ip, v);
-            }} />
-          <span className="vol-num">{m.volume}</span>
-        </div>
-      ))}
-      {!members.length && <div className="muted">Loading…</div>}
-    </div>
   );
 }

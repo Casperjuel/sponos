@@ -186,7 +186,7 @@ pub async fn topology(http: &reqwest::Client, ip: &str) -> Res<Vec<Group>> {
     for g in GROUP.captures_iter(&xml) {
         let coord = attr(&g[1], "Coordinator").unwrap_or_default();
         let id = attr(&g[1], "ID").unwrap_or_else(|| coord.clone());
-        let members: Vec<Member> = MEMBER
+        let mut members: Vec<Member> = MEMBER
             .captures_iter(&g[2])
             .filter(|m| attr(&m[1], "Invisible").as_deref() != Some("1")) // bonded subs / surrounds
             .filter_map(|m| {
@@ -198,6 +198,12 @@ pub async fn topology(http: &reqwest::Client, ip: &str) -> Res<Vec<Group>> {
                 })
             })
             .collect();
+        // speakers list a group's rooms in whatever order they like, and it differs from
+        // one speaker to the next: lead first, the rest by name (emoji in front don't count)
+        members.sort_by_cached_key(|m| {
+            let name = m.name.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+            (m.uuid != coord, name, m.uuid.clone())
+        });
         let Some(c) = members.iter().find(|m| m.uuid == coord).cloned() else {
             continue;
         };

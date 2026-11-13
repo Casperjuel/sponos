@@ -1,5 +1,6 @@
 import { LIKED, type Group, type Household, type Me, type SpItem } from "./api";
 import { Art } from "./Browse";
+import { RoomList, type Grouping } from "./Rooms";
 import * as Icon from "./icons";
 
 type Props = {
@@ -9,6 +10,9 @@ type Props = {
   groups: Group[];
   selected: string | null;
   onSelect: (id: string) => void;
+  grouping: Grouping;
+  /** open the rooms panel for a group, next to its entry */
+  onRooms: (id: string, entry: HTMLElement) => void;
   onRefresh: () => void;
   error: string | null;
   me: Me | null;
@@ -21,7 +25,7 @@ type Props = {
   onLogin: () => void;
 };
 
-export function Sidebar({ households, household, onHousehold, groups, selected, onSelect, onRefresh, error, me, playlists, saved, onForget, open, onOpen, onLogin }: Props) {
+export function Sidebar({ households, household, onHousehold, groups, selected, onSelect, grouping, onRooms, onRefresh, error, me, playlists, saved, onForget, open, onOpen, onLogin }: Props) {
   const current = households.find((h) => h.id === household);
   return (
     <aside className="sidebar">
@@ -36,23 +40,7 @@ export function Sidebar({ households, household, onHousehold, groups, selected, 
         )}
         <button className="icon-btn xs" onClick={onRefresh} title="Rediscover"><Icon.Refresh /></button>
       </div>
-      <ul className="room-list">
-        {groups.map((g) => (
-          <li key={g.id}>
-            <button className={`room ${g.id === selected ? "active" : ""}`} onClick={() => onSelect(g.id)}>
-              <Icon.Speaker />
-              <span className="room-text">
-                <span className="room-name">{g.members.find((m) => m.uuid === g.coordinatorUuid)?.name ?? g.name}</span>
-                {g.members.length > 1 && (
-                  <span className="room-sub">
-                    + {g.members.filter((m) => m.uuid !== g.coordinatorUuid).map((m) => m.name).join(", ")}
-                  </span>
-                )}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      <RoomList grouping={grouping} selected={selected} onSelect={onSelect} onRooms={onRooms} />
       {!groups.length && <p className="muted pad">{error ?? "Looking for speakers…"}</p>}
 
       <div className="panel-head library-head">

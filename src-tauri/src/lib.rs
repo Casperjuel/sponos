@@ -1,3 +1,4 @@
+mod ai;
 mod sonos;
 mod spotify;
 mod sync;
@@ -44,6 +45,8 @@ struct Settings {
     local_only: bool,
     /// random id for this install; votes and "added by" are tied to it
     device_id: String,
+    /// household id → Anthropic API key for AI playlists (also shared, encrypted, unless local only)
+    ai_keys: HashMap<String, String>,
 }
 
 struct App {
@@ -63,6 +66,8 @@ struct App {
     local_rev: std::sync::atomic::AtomicU64,
     /// one push or pull at a time
     sync_lock: Mutex<()>,
+    /// when each system's shared AI key was last looked up
+    ai_checked: Mutex<HashMap<String, std::time::Instant>>,
     /// votes and "added by" per household: (etag, tracks)
     social: Mutex<HashMap<String, (String, Vec<sync::TrackSocial>)>>,
 }
@@ -114,6 +119,7 @@ async fn save_settings(app: State<'_, App>, handle: AppHandle, mut settings: Set
         settings.preferred_household = cur.preferred_household.clone();
         settings.spotify_overrides = cur.spotify_overrides.clone();
         settings.device_id = cur.device_id.clone();
+        settings.ai_keys = cur.ai_keys.clone();
     }
     match (settings.spotify_sid, settings.spotify_sn) {
         (Some(sid), Some(sn)) => drop(settings.spotify_overrides.insert(hh.clone(), (sid, sn))),
@@ -544,6 +550,13 @@ async fn spotify_login(handle: tauri::AppHandle, app: State<'_, App>) -> Res<Opt
     app.spotify.me(&app.http, &c).await
 }
 
+/// Give up on a browser login that is still waiting.
+#[tauri::command]
+async fn spotify_cancel_login(app: State<'_, App>) -> Res<()> {
+    app.spotify.cancel_login();
+    Ok(())
+}
+
 #[tauri::command]
 async fn spotify_logout(app: State<'_, App>) -> Res<()> {
     app.spotify.logout().await
@@ -744,6 +757,77 @@ async fn leave_group(app: State<'_, App>, member_ip: String) -> Res<()> {
     .map(|_| ())
 }
 
+/// Change who plays together and come back with the new groups once the
+/// speakers agree: `leave` speakers go solo, `join` speakers follow `into`.
+/// Waiting here keeps the UI from showing the old grouping for a moment.
+#[tauri::command]
+async fn regroup(
+    app: State<'_, App>,
+    join: Vec<String>,
+    into: Option<String>,
+    leave: Vec<String>,
+) -> Res<Vec<Group>> {
+    let mut calls = tokio::task::JoinSet::new();
+    for ip in leave.iter().cloned() {
+        let http = app.http.clone();
+        calls.spawn(async move {
+            sonos::soap(&http, &ip, Svc::AVTransport, "BecomeCoordinatorOfStandaloneGroup", "").await
+        });
+    }
+    if let Some(lead) = &into {
+        let body = format!(
+            "<CurrentURI>x-rincon:{}</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>",
+            sonos::esc(lead)
+        );
+        for ip in join.iter().cloned() {
+            let (http, body) = (app.http.clone(), body.clone());
+            calls.spawn(async move {
+                sonos::soap(&http, &ip, Svc::AVTransport, "SetAVTransportURI", &body).await
+            });
+        }
+    }
+    let failed = calls.join_all().await.into_iter().find_map(|r| r.err());
+
+    let settled = |groups: &[Group]| {
+        let group_of = |ip: &String| groups.iter().find(|g| g.members.iter().any(|m| &m.ip == ip));
+        leave.iter().all(|ip| group_of(ip).is_some_and(|g| g.members.len() == 1))
+            && join.iter().all(|ip| {
+                group_of(ip).is_some_and(|g| Some(&g.coordinator_uuid) == into.as_ref())
+            })
+    };
+    // the speakers need a moment to agree on the new topology
+    let mut groups = reread_groups(&app).await?;
+    for _ in 0..16 {
+        if failed.is_some() || settled(&groups) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        groups = reread_groups(&app).await?;
+    }
+    *app.groups.lock().await = groups.clone();
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(groups),
+    }
+}
+
+/// Who is grouped with whom, asked from a speaker we already know (no network scan).
+async fn reread_groups(app: &App) -> Res<Vec<Group>> {
+    let ips: Vec<String> = app
+        .groups
+        .lock()
+        .await
+        .iter()
+        .flat_map(|g| g.members.iter().map(|m| m.ip.clone()))
+        .collect();
+    for ip in ips {
+        if let Ok(groups) = sonos::topology(&app.http, &ip).await {
+            return Ok(groups);
+        }
+    }
+    Err("No speaker answered".into())
+}
+
 /// One floorplan per Sonos system: floorplan-<household>.json
 async fn floorplan_path(app: &App) -> PathBuf {
     floorplan_file(app, &app.household().await)
@@ -788,6 +872,319 @@ async fn save_floorplan(app: State<'_, App>, handle: AppHandle, json: String) ->
     std::fs::write(floorplan_path(&app).await, json).map_err(|e| e.to_string())?;
     share(&app, handle, app.household().await);
     Ok(())
+}
+
+// ------------------------------------------------------------------ AI playlists
+
+/// The Anthropic key for the active system: the one saved on this Mac, kept in
+/// step with the one the system shares. `refresh` looks the shared one up now.
+async fn ai_key(app: &App, refresh: bool) -> Option<String> {
+    if ai::via_cli() {
+        return Some("claude-cli".into()); // development: answered by the local Claude Code CLI
+    }
+    let hh = app.household().await;
+    if hh.is_empty() {
+        return None;
+    }
+    let (local, local_only) = {
+        let s = app.settings.lock().await;
+        (s.ai_keys.get(&hh).cloned(), s.local_only)
+    };
+    if local_only {
+        return local;
+    }
+    let stale = app
+        .ai_checked
+        .lock()
+        .await
+        .get(&hh)
+        .is_none_or(|at| at.elapsed() > Duration::from_secs(300));
+    if !(refresh || stale) {
+        return local;
+    }
+    match sync::pull_ai_key(&app.http, &hh).await {
+        Ok(shared) => {
+            app.ai_checked.lock().await.insert(hh.clone(), std::time::Instant::now());
+            if shared != local {
+                let mut s = app.settings.lock().await;
+                match &shared {
+                    Some(k) => drop(s.ai_keys.insert(hh, k.clone())),
+                    None => drop(s.ai_keys.remove(&hh)),
+                }
+                let _ = write_settings(app, &s);
+            }
+            shared
+        }
+        Err(e) => {
+            eprintln!("ai key: {e}"); // offline: the saved one still works
+            local
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiStatus {
+    /// a key is saved for this system
+    ready: bool,
+    /// the key is shared with everyone on this Sonos system
+    shared: bool,
+}
+
+#[tauri::command]
+async fn ai_status(app: State<'_, App>) -> Res<AiStatus> {
+    Ok(AiStatus {
+        ready: ai_key(&app, false).await.is_some(),
+        shared: !app.settings.lock().await.local_only,
+    })
+}
+
+/// Save (or with an empty string, remove) the Anthropic key for the active system.
+#[tauri::command]
+async fn ai_set_key(app: State<'_, App>, key: String) -> Res<AiStatus> {
+    let hh = app.household().await;
+    if hh.is_empty() {
+        return Err("Find your speakers first: the key is saved per Sonos system.".into());
+    }
+    let key = key.trim().to_string();
+    if !key.is_empty() {
+        ai::check_key(&app.http, &key).await?;
+    }
+    let shared = {
+        let mut s = app.settings.lock().await;
+        if key.is_empty() {
+            s.ai_keys.remove(&hh);
+        } else {
+            s.ai_keys.insert(hh.clone(), key.clone());
+        }
+        write_settings(&app, &s)?;
+        !s.local_only
+    };
+    if shared {
+        sync::push_ai_key(&app.http, &hh, (!key.is_empty()).then_some(key.as_str())).await?;
+        app.ai_checked.lock().await.insert(hh, std::time::Instant::now());
+    }
+    Ok(AiStatus { ready: !key.is_empty(), shared })
+}
+
+const NO_AI_KEY: &str = "NO_AI_KEY";
+
+/// Run `call` with the system's key. If Anthropic rejects it, someone may have
+/// replaced the shared key since: fetch it again and try once more.
+async fn with_ai_key<T, F, Fut>(app: &App, call: F) -> Res<T>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Res<T>>,
+{
+    let key = ai_key(app, false).await.ok_or(NO_AI_KEY)?;
+    match call(key.clone()).await {
+        Err(e) if e == ai::BAD_KEY => match ai_key(app, true).await {
+            Some(fresh) if fresh != key => call(fresh).await,
+            _ => Err(e),
+        },
+        other => other,
+    }
+}
+
+/// Looks songs Claude named up on Spotify, a few at a time. With `run`, each
+/// result is also reported to the page waiting for that request.
+struct Lookups {
+    handle: AppHandle,
+    run: Option<u32>,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
+    set: tokio::task::JoinSet<(usize, Option<SpItem>)>,
+}
+
+impl Lookups {
+    fn new(handle: &AppHandle, run: Option<u32>) -> Self {
+        Self { handle: handle.clone(), run, gate: std::sync::Arc::new(tokio::sync::Semaphore::new(5)), set: Default::default() }
+    }
+
+    fn start(&mut self, index: usize, p: ai::Pick) {
+        let (handle, gate, run) = (self.handle.clone(), self.gate.clone(), self.run);
+        self.set.spawn(async move {
+            let _slot = gate.acquire().await;
+            let app = handle.state::<App>();
+            let s = app.settings.lock().await.clone();
+            let found = app
+                .spotify
+                .find_track(&app.http, &creds(&s), &p.title, &p.artist, market(&s))
+                .await;
+            let item = found.ok().flatten();
+            if let Some(run) = run {
+                let _ = handle.emit("ai-playlist", AiProgress::Found { run, index, item: item.clone() });
+            }
+            (index, item)
+        });
+    }
+
+    /// Everything started, in the order of `index`; `len` is how many songs there are.
+    async fn finish(self, len: usize) -> Vec<Option<SpItem>> {
+        let mut out = vec![None; len];
+        for (i, item) in self.set.join_all().await {
+            if let Some(slot) = out.get_mut(i) {
+                *slot = item;
+            }
+        }
+        out
+    }
+}
+
+async fn find_tracks(handle: &AppHandle, picks: Vec<ai::Pick>) -> Vec<Option<SpItem>> {
+    let (len, mut lookups) = (picks.len(), Lookups::new(handle, None));
+    for (i, p) in picks.into_iter().enumerate() {
+        lookups.start(i, p);
+    }
+    lookups.finish(len).await
+}
+
+/// What the waiting page shows while a playlist is being made; `run` is the
+/// caller's number for the request, so a page ignores someone else's progress.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase", tag = "step")]
+enum AiProgress {
+    /// the playlist as far as Claude has written it; `complete` once every song is named
+    Plan { run: u32, title: Option<String>, description: Option<String>, picks: Vec<ai::Pick>, complete: bool },
+    /// one lookup finished; `item` is None when Spotify doesn't have the song
+    Found { run: u32, index: usize, item: Option<SpItem> },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiPlaylist {
+    title: String,
+    description: String,
+    tracks: Vec<SpItem>,
+    /// what Claude named, for asking it to change the playlist later
+    picks: Vec<ai::Pick>,
+    /// songs Spotify didn't have
+    missing: usize,
+}
+
+/// A playlist from a text prompt. With `previous`, `request` says how to change that one.
+#[tauri::command]
+async fn ai_playlist(
+    handle: AppHandle,
+    app: State<'_, App>,
+    request: String,
+    context: String,
+    previous: Option<ai::Previous>,
+    run: u32,
+) -> Res<AiPlaylist> {
+    let country = market(&*app.settings.lock().await).to_string();
+    let context = format!("{context}\nCountry: {country}");
+    // songs are looked up on Spotify as soon as Claude has named them, while it is still writing
+    let (drafts, mut heard) = tokio::sync::mpsc::unbounded_channel::<ai::Draft>();
+    let asking = async {
+        let plan = with_ai_key(&app, |key| {
+            let (request, context, previous) = (request.clone(), context.clone(), previous.clone());
+            let (http, drafts) = (app.http.clone(), drafts.clone());
+            async move {
+                ai::playlist(&http, &key, &request, &context, previous.as_ref(), move |d| {
+                    let _ = drafts.send(d);
+                })
+                .await
+            }
+        })
+        .await;
+        drop(drafts);
+        plan
+    };
+    let looking = async {
+        let (mut lookups, mut started) = (Lookups::new(&handle, Some(run)), Vec::<ai::Pick>::new());
+        while let Some(d) = heard.recv().await {
+            for (i, p) in d.tracks.iter().enumerate().skip(started.len()) {
+                lookups.start(i, p.clone());
+            }
+            if d.tracks.len() > started.len() {
+                started = d.tracks.clone();
+            }
+            let _ = handle.emit(
+                "ai-playlist",
+                AiProgress::Plan { run, title: d.title, description: d.description, picks: started.clone(), complete: false },
+            );
+        }
+        (lookups, started)
+    };
+    let (plan, (mut lookups, started)) = tokio::join!(asking, looking);
+    let plan = plan?;
+    // normally the finished playlist just continues what was shown; if it doesn't, start the lookups over
+    if !plan.tracks.starts_with(&started) {
+        lookups = Lookups::new(&handle, Some(run));
+    }
+    let done = if plan.tracks.starts_with(&started) { started.len() } else { 0 };
+    let _ = handle.emit(
+        "ai-playlist",
+        AiProgress::Plan {
+            run,
+            title: Some(plan.title.clone()),
+            description: Some(plan.description.clone()),
+            picks: plan.tracks.clone(),
+            complete: true,
+        },
+    );
+    for (i, p) in plan.tracks.iter().enumerate().skip(done) {
+        lookups.start(i, p.clone());
+    }
+    let found = lookups.finish(plan.tracks.len()).await;
+    let missing = found.iter().filter(|t| t.is_none()).count();
+    let mut seen = std::collections::HashSet::new();
+    let (mut tracks, mut picks) = (vec![], vec![]);
+    for (pick, item) in plan.tracks.into_iter().zip(found) {
+        // the same recording can come back for two differently named picks
+        if let Some(item) = item.filter(|t| seen.insert(t.id.clone())) {
+            tracks.push(item);
+            picks.push(pick);
+        }
+    }
+    if tracks.is_empty() {
+        return Err("Spotify didn't have any of the suggested songs. Try again.".into());
+    }
+    Ok(AiPlaylist {
+        title: plan.title,
+        description: plan.description,
+        tracks,
+        picks,
+        missing,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiFollowUp {
+    item: SpItem,
+    why: String,
+}
+
+/// Songs that would be good right after the one that is playing.
+#[tauri::command]
+async fn ai_follow_ups(
+    handle: AppHandle,
+    app: State<'_, App>,
+    title: String,
+    artist: String,
+    upcoming: Vec<String>,
+) -> Res<Vec<AiFollowUp>> {
+    let now = ai::Pick { title, artist };
+    let picks = with_ai_key(&app, |key| {
+        let (now, upcoming, http) = (now.clone(), upcoming.clone(), app.http.clone());
+        async move { ai::follow_ups(&http, &key, &now, &upcoming).await }
+    })
+    .await?;
+    let found = find_tracks(
+        &handle,
+        picks.iter().map(|p| ai::Pick { title: p.title.clone(), artist: p.artist.clone() }).collect(),
+    )
+    .await;
+    let mut seen = std::collections::HashSet::new();
+    Ok(picks
+        .into_iter()
+        .zip(found)
+        .filter_map(|(p, item)| {
+            let item = item.filter(|t| seen.insert(t.id.clone()))?;
+            Some(AiFollowUp { item, why: p.why })
+        })
+        .collect())
 }
 
 // ------------------------------------------------------------------ sharing
@@ -1005,6 +1402,7 @@ pub fn run() {
                 sync_etags: Default::default(),
                 local_rev: Default::default(),
                 sync_lock: Default::default(),
+                ai_checked: Default::default(),
                 social: Default::default(),
             });
             tray::setup(app.handle())?;
@@ -1046,6 +1444,7 @@ pub fn run() {
             spotify_search,
             spotify_children,
             spotify_login,
+            spotify_cancel_login,
             spotify_logout,
             spotify_me,
             spotify_playlists,
@@ -1058,11 +1457,16 @@ pub fn run() {
             overview,
             join_group,
             leave_group,
+            regroup,
             get_floorplan,
             save_floorplan,
             spotify_resolve,
             spotify_check_app,
             sync_pull,
+            ai_status,
+            ai_set_key,
+            ai_playlist,
+            ai_follow_ups,
             get_social,
             vote_track,
             react_track,

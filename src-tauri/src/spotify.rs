@@ -39,6 +39,8 @@ pub struct Spotify {
     user_token: Cached,
     /// refresh token lives in its own file so saving settings can't clobber it
     refresh_path: PathBuf,
+    /// wakes a browser login that is still waiting, so it can be given up or started over
+    login_cancel: tokio::sync::Notify,
 }
 
 pub struct Creds<'a> {
@@ -89,7 +91,13 @@ impl Spotify {
             app_token: Default::default(),
             user_token: Default::default(),
             refresh_path,
+            login_cancel: Default::default(),
         }
+    }
+
+    /// Stop waiting for the browser (the tab was closed, or the wrong account was picked).
+    pub fn cancel_login(&self) {
+        self.login_cancel.notify_waiters();
     }
 
     pub async fn reset_app_token(&self) {
@@ -244,7 +252,7 @@ impl Spotify {
             urlencoding::encode(REDIRECT_URI),
         ))?;
 
-        let code = tokio::time::timeout(Duration::from_secs(300), async {
+        let wait = tokio::time::timeout(Duration::from_secs(300), async {
             loop {
                 let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
                 let mut buf = vec![0u8; 8192];
@@ -272,9 +280,11 @@ impl Spotify {
                     .await;
                 return result;
             }
-        })
-        .await
-        .map_err(|_| "Login timed out".to_string())??;
+        });
+        let code = tokio::select! {
+            r = wait => r.map_err(|_| "Login timed out".to_string())??,
+            _ = self.login_cancel.notified() => return Err(LOGIN_CANCELLED.into()),
+        };
 
         let body = format!(
             "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={verifier}",
@@ -351,6 +361,27 @@ impl Spotify {
                 .into(),
             image: image(&v),
         }))
+    }
+
+    /// The song Claude named, as Spotify has it. `None` when Spotify doesn't know it.
+    pub async fn find_track(
+        &self,
+        http: &reqwest::Client,
+        c: &Creds<'_>,
+        title: &str,
+        artist: &str,
+        market: &str,
+    ) -> Res<Option<SpItem>> {
+        // exact fields first; a plain search catches odd punctuation and featured artists
+        let queries = [format!("track:{title} artist:{artist}"), format!("{title} {artist}")];
+        for q in queries {
+            let path = format!("/search?q={}&type=track&limit=3&market={market}", urlencoding::encode(&q));
+            let v = self.get(http, c, &path, false).await?;
+            if let Some(found) = list(&v["tracks"], |t| track(t, None)).into_iter().next() {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
     }
 
     pub async fn search(
@@ -623,6 +654,7 @@ async fn embed_tracks(http: &reqwest::Client, kind: &str, id: &str) -> Res<Vec<S
     Ok(tracks)
 }
 
+pub const LOGIN_CANCELLED: &str = "Login cancelled";
 pub const NOT_REGISTERED: &str = "Your Spotify account isn't on this Spotify app's list of 5 users. Set up your own free Spotify app under Settings → Spotify, or ask the owner to add you.";
 
 /// Catch typos in the setup flow before the browser round-trip: the ID's

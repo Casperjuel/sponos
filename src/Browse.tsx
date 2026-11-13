@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
-import { api, fmt, type Group, type PlayerState, type QueueMode, type SearchResult, type SpItem } from "./api";
+import { useEffect, useRef, useState } from "react";
+import { api, fmt, type AiStatus, type Group, type PlayerState, type QueueMode, type SearchResult, type SpItem } from "./api";
 import { errText } from "./App";
+import { FollowUps, Inspiration, type Mood } from "./Mood";
 import { AddedByLine, Reactions, VoteButtons } from "./Social";
 import * as Icon from "./icons";
 
@@ -16,11 +17,20 @@ type Props = {
   onSettings: () => void;
   onLogin: () => void;
   loggedIn: boolean;
+  ai: AiStatus | null;
+  /** the Inspiration page is open; `start` is a prompt handed over from the search box */
+  moodOpen: { start: string | null } | null;
+  /** open Inspiration (with a prompt to start on, or null for the empty page); undefined closes it */
+  onMood: (start?: string | null) => void;
+  mood: Mood | null;
+  setMood: (m: Mood | null) => void;
+  /** what the queue holds after the current song */
+  upcoming: string[];
 };
 
 type Tab = "all" | "tracks" | "albums" | "artists" | "playlists";
 
-export function Browse({ query, nonce, open, setOpen, state, group, enqueue, enqueueMany, onSettings, onLogin, loggedIn }: Props) {
+export function Browse({ query, nonce, open, setOpen, state, group, enqueue, enqueueMany, onSettings, onLogin, loggedIn, ai, moodOpen, onMood, mood, setMood, upcoming }: Props) {
   const [results, setResults] = useState<SearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,7 +61,16 @@ export function Browse({ query, nonce, open, setOpen, state, group, enqueue, enq
         enqueue={enqueue} enqueueMany={enqueueMany} onLogin={onLogin} loggedIn={loggedIn} />
     );
 
-  if (!query.trim()) return <NowPlaying state={state} group={group} />;
+  if (moodOpen) {
+    const t = state?.track;
+    return (
+      <Inspiration ai={ai} start={moodOpen.start} mood={mood} setMood={setMood}
+        playing={t?.title ? `${t.title}${t.artist ? ` by ${t.artist}` : ""}` : undefined}
+        enqueue={enqueue} enqueueMany={enqueueMany} onSettings={onSettings} onClose={() => onMood()} />
+    );
+  }
+
+  if (!query.trim()) return <NowPlaying state={state} group={group} ai={ai} upcoming={upcoming} enqueue={enqueue} />;
 
   const r = results;
   const section = (key: Exclude<Tab, "all">, title: string, items: SpItem[] | undefined, grid: boolean) => {
@@ -89,6 +108,16 @@ export function Browse({ query, nonce, open, setOpen, state, group, enqueue, enq
         {loading && <span className="spinner" />}
       </nav>
       <div className="scroll">
+        {ai && query.trim().length > 2 && (
+          <button className="mood-cta" onClick={() => onMood(query.trim())}>
+            <Icon.Sparkle />
+            <span className="row-text">
+              <span className="title">Make a playlist for “{query.trim()}”</span>
+              <span className="sub">Describe a mood, a moment or the people listening, and get songs that fit</span>
+            </span>
+            <span className="go">›</span>
+          </button>
+        )}
         {error && (
           <div className="empty">
             <p>{error}</p>
@@ -118,7 +147,7 @@ function Actions({ item, enqueue }: { item: SpItem; enqueue: Props["enqueue"] })
   );
 }
 
-function TrackRow({ item, enqueue, index }: { item: SpItem; enqueue: Props["enqueue"]; index?: number }) {
+export function TrackRow({ item, enqueue, index }: { item: SpItem; enqueue: Props["enqueue"]; index?: number }) {
   return (
     <div className="row" onDoubleClick={() => enqueue(item, "now")} title="Double-click to play now">
       {index != null ? <span className="idx">{index}</span> : <Art src={item.image} />}
@@ -215,14 +244,19 @@ function Detail({ item, onBack, backLabel, enqueue, enqueueMany, onLogin, logged
   );
 }
 
-function NowPlaying({ state, group }: { state: PlayerState | null; group: Group | null }) {
+function NowPlaying({ state, group, ai, upcoming, enqueue }: {
+  state: PlayerState | null; group: Group | null; ai: AiStatus | null; upcoming: string[]; enqueue: Props["enqueue"];
+}) {
   const t = state?.track;
   return (
     <main className="browse now">
       {t?.title ? (
         <div className="now-inner">
           {/* stays mounted, so it can play the record-change animation */}
-          <Vinyl id={`${t.title}|${t.artist}`} src={t.art} playing={state?.transport === "PLAYING"} />
+          {/* the cover takes the height the text under it leaves over */}
+          <div className="now-art-slot">
+            <Vinyl id={`${t.title}|${t.artist}`} src={t.art} playing={state?.transport === "PLAYING"} />
+          </div>
           {/* keyed on the track so a new song replays the text's entrance animation */}
           <div className="now-text" key={t.title}>
             <h1>{t.title}</h1>
@@ -235,6 +269,7 @@ function NowPlaying({ state, group }: { state: PlayerState | null; group: Group 
             <Reactions song={t} />
             <AddedByLine song={t} />
           </div>
+          {ai?.ready && <FollowUps song={t} upcoming={upcoming} enqueue={enqueue} />}
         </div>
       ) : (
         <div className="empty">
@@ -287,11 +322,50 @@ function Vinyl({ id, src, playing }: { id: string; src?: string; playing: boolea
   );
 }
 
+/**
+ * Speakers serve the covers of what they play, and a busy one can leave the
+ * request hanging forever. Any speaker on the system can serve the same cover,
+ * so a slow one is skipped for a while and the others are asked instead.
+ */
+const SPEAKER_ART = /^http:\/\/([\d.]+):1400(\/getaa.*)$/;
+const ART_WAIT = 4000;
+const SKIP_FOR = 10 * 60_000;
+let artHosts: string[] = [];
+const slowUntil = new Map<string, number>();
+export const setArtHosts = (ips: string[]) => (artHosts = ips);
+
+function artSources(src: string) {
+  const m = SPEAKER_ART.exec(src);
+  if (!m) return [src];
+  const hosts = [m[1], ...artHosts.filter((h) => h !== m[1])];
+  const fine = hosts.filter((h) => (slowUntil.get(h) ?? 0) < Date.now());
+  return (fine.length ? fine : hosts).slice(0, 4).map((h) => `http://${h}:1400${m[2]}`);
+}
+
 export function Art({ src }: { src?: string }) {
-  const [broken, setBroken] = useState(false);
-  useEffect(() => setBroken(false), [src]);
-  return src && !broken ? (
-    <img className="art" src={src} alt="" loading="lazy" onError={() => setBroken(true)} />
+  const [sources, setSources] = useState(() => (src ? artSources(src) : []));
+  const [n, setN] = useState(0);
+  const img = useRef<HTMLImageElement>(null);
+  useEffect(() => (setSources(src ? artSources(src) : []), setN(0)), [src]);
+  const url = sources[n];
+
+  // an image that neither loads nor fails: give up on that speaker and ask the next
+  useEffect(() => {
+    if (!url || sources.length < 2) return;
+    const t = setInterval(() => {
+      const el = img.current;
+      if (!el || el.complete) return clearInterval(t);
+      const r = el.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > window.innerHeight) return; // lazy and off screen: not asked for yet
+      const host = SPEAKER_ART.exec(url)?.[1];
+      if (host) slowUntil.set(host, Date.now() + SKIP_FOR);
+      setN((i) => i + 1);
+    }, ART_WAIT);
+    return () => clearInterval(t);
+  }, [url, sources.length]);
+
+  return url ? (
+    <img ref={img} key={url} className="art" src={url} alt="" loading="lazy" onError={() => setN((i) => i + 1)} />
   ) : (
     <div className="art placeholder"><Icon.Music /></div>
   );

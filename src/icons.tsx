@@ -41,5 +41,6 @@ export const Locate = I("M12 2v3M12 19v3M2 12h3M19 12h3M12 16a4 4 0 1 0 0-8 4 4 
 export const Move = I("M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20");
 export const Crossfade = I("M3 7h3c5 0 7 10 12 10h3M3 17h3c5 0 7-10 12-10h3");
 export const Check = I("M20 6 9 17l-5-5");
+export const Sparkle = I("M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8L11 3ZM18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z");
 export const ZoomIn = I("M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.3-4.3M11 8v6M8 11h6");
 export const ZoomOut = I("M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.3-4.3M8 11h6");
