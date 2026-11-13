@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/Casperjuel/sponos/compare/v0.14.0...v0.14.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* AI playlists also work with a Vercel AI Gateway key, not only an Anthropic API key ([4ac81ce](https://github.com/Casperjuel/sponos/commit/4ac81ceeed8a36f60e07b5bab589c03eee053cdb))
+
 ## [0.14.0](https://github.com/Casperjuel/sponos/compare/v0.13.0...v0.14.0) (2026-11-13)
 
 
