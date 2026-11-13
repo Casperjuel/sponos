@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
-import { api, type Household, type Me, type Settings, type SpotifyLink } from "./api";
+import { api, type AiStatus, type Household, type Me, type Settings, type SpotifyLink } from "./api";
 import { errText, type ToastFn } from "./App";
+import { AiKeySettings } from "./Mood";
 import { applyGlass, applyTheme, DEFAULT_GLASS, savedGlass, savedTheme, THEMES, type GlassPrefs } from "./theme";
 
 type Props = {
@@ -13,9 +14,11 @@ type Props = {
   onClose: () => void;
   onSaved: () => void;
   toast: ToastFn;
+  ai: AiStatus | null;
+  setAi: (s: AiStatus) => void;
 };
 
-export function SettingsModal({ groupId, household, me, onLogin, onLogout, onClose, onSaved, toast }: Props) {
+export function SettingsModal({ groupId, household, me, onLogin, onLogout, onClose, onSaved, toast, ai, setAi }: Props) {
   const [s, setS] = useState<Settings | null>(null);
   const [link, setLink] = useState<SpotifyLink | null>(null);
   const [theme, setTheme] = useState(savedTheme);
@@ -98,6 +101,8 @@ export function SettingsModal({ groupId, household, me, onLogin, onLogout, onClo
             </>
           )}
         </fieldset>
+
+        <AiKeySettings ai={ai && { ...ai, shared: !s.localOnly }} onChange={setAi} toast={toast} />
 
         <fieldset>
           <legend>Sonos</legend>

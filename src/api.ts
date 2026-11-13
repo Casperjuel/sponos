@@ -83,6 +83,8 @@ export const api = {
   search: (q: string) => invoke<SearchResult>("spotify_search", { q }),
   children: (item: SpItem) => invoke<SpItem[]>("spotify_children", { kind: item.kind, id: item.id, name: item.name }),
   login: () => invoke<Me | null>("spotify_login"),
+  /** stop a login that is still waiting for the browser; that login then fails with "Login cancelled" */
+  cancelLogin: () => invoke<void>("spotify_cancel_login"),
   logout: () => invoke<void>("spotify_logout"),
   me: () => invoke<Me | null>("spotify_me"),
   playlists: () => invoke<SpItem[]>("spotify_playlists"),
@@ -94,6 +96,19 @@ export const api = {
   overview: () => invoke<GroupOverview[]>("overview"),
   joinGroup: (memberIp: string, coordinatorUuid: string) => invoke<void>("join_group", { memberIp, coordinatorUuid }),
   leaveGroup: (memberIp: string) => invoke<void>("leave_group", { memberIp }),
+  /** is there an Anthropic key for this Sonos system (AI playlists)? */
+  aiStatus: () => invoke<AiStatus>("ai_status"),
+  /** save the system's Anthropic key (checked first); an empty string removes it */
+  aiSetKey: (key: string) => invoke<AiStatus>("ai_set_key", { key }),
+  /** a playlist from a sentence; with `previous`, `request` says how to change that playlist */
+  /** `run` is the caller's number for this request; "ai-playlist" events carry it while the playlist is being made */
+  aiPlaylist: (request: string, context: string, previous: AiPrevious | null, run: number) =>
+    invoke<AiPlaylist>("ai_playlist", { request, context, previous, run }),
+  /** songs that would follow this one well; `upcoming` is what is already queued */
+  aiFollowUps: (title: string, artist: string, upcoming: string[]) =>
+    invoke<AiFollowUp[]>("ai_follow_ups", { title, artist, upcoming }),
+  /** `leave` speakers (IPs) go solo and `join` speakers follow the lead `into`; resolves with the new groups once the speakers agree */
+  regroup: (join: string[], into: string | null, leave: string[]) => invoke<Group[]>("regroup", { join, into, leave }),
   getFloorplan: async (): Promise<Floorplan> => {
     const raw = await invoke<string | null>("get_floorplan");
     try {
@@ -117,6 +132,17 @@ export const api = {
   /** the logged-in user's Spotify Connect queue */
   addToSpotifyQueue: (id: string) => invoke<void>("spotify_add_to_player_queue", { id }),
 };
+
+export type AiStatus = { ready: boolean; shared: boolean };
+/** a song as Claude named it */
+export type AiPick = { title: string; artist: string };
+export type AiPlaylist = { title: string; description: string; tracks: SpItem[]; picks: AiPick[]; missing: number };
+export type AiPrevious = { prompt: string; title: string; description: string; tracks: AiPick[] };
+/** progress of a playlist being made: the playlist as far as Claude has written it (again for every new song), and each Spotify lookup */
+export type AiProgress =
+  | { step: "plan"; run: number; title: string | null; description: string | null; picks: AiPick[]; complete: boolean }
+  | { step: "found"; run: number; index: number; item: SpItem | null };
+export type AiFollowUp = { item: SpItem; why: string };
 
 /** a Sonos system ("household"), e.g. Office or Home */
 export type Household = { id: string; name: string; speakers: number };

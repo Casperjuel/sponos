@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type Me, type Settings } from "./api";
 import { errText } from "./App";
@@ -6,6 +6,8 @@ import * as Icon from "./icons";
 
 const REDIRECT = "http://127.0.0.1:8888/callback";
 const DASHBOARD = "https://developer.spotify.com/dashboard/create";
+const MY_APPS = "https://developer.spotify.com/dashboard";
+const isKey = (s: string) => /^[0-9a-f]{32}$/i.test(s);
 
 type Step = "intro" | "create" | "keys" | "connect" | "done";
 const STEPS: { id: Step; label: string }[] = [
@@ -35,6 +37,10 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [who, setWho] = useState<Me | null>(me);
+  /** Spotify turned the account away: it isn't one of the app's 5 allowed users */
+  const [notListed, setNotListed] = useState(false);
+  /** the keys were just accepted: open the browser without another click */
+  const [autoLogin, setAutoLogin] = useState(false);
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -46,7 +52,7 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
     });
   }, []);
 
-  useEffect(() => setError(null), [step]);
+  useEffect(() => (setError(null), setNotListed(false)), [step]);
 
   const copy = () => {
     navigator.clipboard.writeText(REDIRECT);
@@ -69,6 +75,7 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
       await api.checkSpotifyApp(id.trim(), secret.trim());
       await save(id.trim(), secret.trim());
       setStep("connect");
+      setAutoLogin(true);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -76,9 +83,13 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
     }
   };
 
-  const login = async () => {
+  /** the login in flight, so a restart can wait for it to let go of the redirect port */
+  const pending = useRef<Promise<void> | null>(null);
+  const login = () => (pending.current = runLogin());
+  const runLogin = async () => {
     setBusy(true);
     setError(null);
+    setNotListed(false);
     try {
       const m = await connect();
       if (m) {
@@ -87,6 +98,8 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
       }
     } catch (e) {
       const msg = errText(e);
+      if (/login cancelled/i.test(msg)) return;
+      if (/list of 5 users/i.test(msg)) return setNotListed(true);
       setError(
         /redirect/i.test(msg)
           ? `Spotify didn't accept the redirect URI. In your app's settings, add exactly ${REDIRECT} under Redirect URIs and save.`
@@ -97,23 +110,36 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
     }
   };
 
+  useEffect(() => {
+    if (!autoLogin || step !== "connect") return;
+    setAutoLogin(false);
+    login();
+  }, [autoLogin, step]);
+
+  /** the tab was closed or the wrong account picked: stop waiting so the login can start over */
+  const cancel = () => api.cancelLogin().catch(() => {});
+  const close = () => (cancel(), onClose());
+
   /** people on the owner's list of 5 can use the built-in app */
   const useBuiltIn = async () => {
     setBusy(true);
     try {
       await save("", settings?.spotifyClientSecret ?? "");
       setStep("connect");
+      setAutoLogin(true);
     } finally {
       setBusy(false);
     }
   };
 
-  const index = STEPS.findIndex((s) => s.id === step);
+  const ownApp = !!settings?.spotifyClientId;
+  // the built-in app has nothing to create or paste, so it gets no step counter
+  const index = step === "connect" && !ownApp ? -1 : STEPS.findIndex((s) => s.id === step);
 
   return (
-    <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="modal setup">
-        <button className="icon-btn sm setup-close" onClick={onClose} title="Close"><Icon.X /></button>
+        <button className="icon-btn sm setup-close" onClick={close} title="Close"><Icon.X /></button>
 
         {index >= 0 && (
           <ol className="setup-steps">
@@ -134,29 +160,39 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
               Search and queueing already work. Connect your Spotify account to also get <b>your playlists</b>,{" "}
               <b>liked songs</b>, and your <b>face on songs you add</b>.
             </p>
-            <p className="muted">
-              Spotify lets only 5 people log in to an app like this one, so you'll make your own (free, about 3 minutes).
-              You need Spotify Premium.
-            </p>
+            <p className="muted">How do you want to connect?</p>
+            <div className="setup-choices">
+              <button className="setup-choice" onClick={() => setStep("create")}>
+                <b>Make my own Spotify app <span className="tag">Works for everyone</span></b>
+                <small>Free and takes about 3 minutes. We walk you through it. You need Spotify Premium.</small>
+                <span className="go">›</span>
+              </button>
+              <button className="setup-choice" disabled={busy || !settings} onClick={useBuiltIn}>
+                <b>Someone added me already</b>
+                <small>
+                  Only if the person who runs Sponos here added your Spotify account. Spotify allows just 5 people this way.
+                </small>
+                <span className="go">›</span>
+              </button>
+            </div>
             <div className="setup-actions">
-              <button className="btn primary" onClick={() => setStep("create")}>Set it up</button>
               <button className="btn" onClick={onClose}>Not now</button>
             </div>
-            <button className="link small" disabled={busy} onClick={useBuiltIn}>
-              Already added to the built-in app by its owner? Log in directly
-            </button>
           </section>
         )}
 
         {step === "create" && (
           <section>
             <h2>Create your Spotify app</h2>
-            <p className="muted">Log in to Spotify's developer site with your normal Spotify account.</p>
+            <p className="muted">
+              Log in to Spotify's developer site with your normal Spotify account. The first time, Spotify asks you to accept
+              its developer terms.
+            </p>
             <button className="btn primary wide" onClick={() => openUrl(DASHBOARD)}>
               Open Spotify developer dashboard ↗
             </button>
             <ol className="checklist">
-              <li><b>App name</b>: Sponos (anything works). <b>Description</b>: anything.</li>
+              <li><b>App name</b> and <b>description</b>: write anything, for example Sponos. Leave <b>Website</b> empty.</li>
               <li>
                 <b>Redirect URI</b>: paste this and click <b>Add</b>
                 <div className="copy-row">
@@ -180,13 +216,14 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
             <p className="muted">
               In your new app, open <b>Settings</b>. Copy the <b>Client ID</b>, then click <b>View client secret</b> and copy that too.
             </p>
+            <button className="link small" onClick={() => openUrl(MY_APPS)}>Closed the tab? Open your Spotify apps ↗</button>
             <label>
-              Client ID
+              <span>Client ID{isKey(id) && <span className="field-ok">✓ looks right</span>}</span>
               <input autoFocus value={id} placeholder="32 letters and numbers" spellCheck={false}
                 onChange={(e) => setId(e.target.value.trim())} />
             </label>
             <label>
-              Client secret
+              <span>Client secret{isKey(secret) && <span className="field-ok">✓ looks right</span>}</span>
               <input type="password" value={secret} placeholder="32 letters and numbers" spellCheck={false}
                 onChange={(e) => setSecret(e.target.value.trim())} />
             </label>
@@ -195,7 +232,7 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
             <div className="setup-actions">
               <button className="btn" onClick={() => setStep("create")}>Back</button>
               <button className="btn primary" disabled={busy || !id} onClick={checkKeys}>
-                {busy ? "Checking…" : "Continue"}
+                {busy ? "Checking…" : "Continue to log in"}
               </button>
             </div>
           </section>
@@ -206,16 +243,42 @@ export function SpotifySetup({ me, connect, onClose }: Props) {
             <h2>Connect your account</h2>
             <p className="muted">
               Your browser opens Spotify. Click <b>Agree</b>, then come back here.
+              {ownApp && <> Use the same Spotify account you made the app with.</>}
             </p>
+            {busy && <div className="setup-waiting">Waiting for you to finish in the browser…</div>}
             {error && <div className="setup-error">{error}</div>}
-            {settings?.spotifyClientId && (
+            {notListed && (
+              <div className="setup-error">
+                {ownApp ? (
+                  <>
+                    Spotify logged you in with an account that isn't allowed to use this Spotify app. Log in with the
+                    account that created the app (log out of Spotify in your browser first if it picks the wrong one),
+                    or add this account under <b>User Management</b> in the app's dashboard.
+                  </>
+                ) : (
+                  <>
+                    The built-in Spotify app only has room for 5 people, and your account isn't one of them. Make your
+                    own free Spotify app instead. It takes about 3 minutes.
+                  </>
+                )}
+              </div>
+            )}
+            {ownApp && !busy && (
               <button className="link small" onClick={() => setStep("create")}>Set up with a different Spotify app</button>
             )}
             <div className="setup-actions">
-              <button className="btn" onClick={() => setStep(settings?.spotifyClientId ? "keys" : "intro")}>Back</button>
-              <button className="btn primary" disabled={busy} onClick={login}>
-                {busy ? "Waiting for Spotify…" : "Log in to Spotify"}
-              </button>
+              <button className="btn" onClick={() => (cancel(), setStep(ownApp ? "keys" : "intro"))}>Back</button>
+              {busy ? (
+                // closing the tab would otherwise leave this waiting for minutes
+                <button className="btn" onClick={async () => (await cancel(), await pending.current, login())}>Open the login page again</button>
+              ) : notListed && !ownApp ? (
+                <>
+                  <button className="btn" onClick={login}>Try again</button>
+                  <button className="btn primary" onClick={() => setStep("create")}>Set up my own app</button>
+                </>
+              ) : (
+                <button className="btn primary" onClick={login}>{notListed ? "Try again" : "Log in to Spotify"}</button>
+              )}
             </div>
           </section>
         )}

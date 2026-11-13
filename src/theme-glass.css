@@ -137,6 +137,8 @@
 [data-theme="glass"] .icon-btn.lg svg { width: 24px; height: 24px; }
 [data-theme="glass"] :is(.icon-btn.lg, .mini-controls .icon-btn) svg path { fill: url(#gloss); }
 
+/* the pearl is bigger than the plain button and glows: keep it clear of the progress bar */
+[data-theme="glass"] .tb-center { gap: 16px; }
 /* the pearl: play/pause as a glossy sphere, breathing in the accent colour while playing */
 [data-theme="glass"] .play-btn {
   position: relative;
@@ -230,6 +232,23 @@
 /* ---------------------------------------------------------------- rooms as iOS app icons */
 [data-theme="glass"] .room { align-items: center; transition: background .2s, transform .35s var(--spring); }
 [data-theme="glass"] .room:active { transform: scale(.97); }
+[data-theme="glass"] .room-members { --rail: 23px; }
+[data-theme="glass"] .room-item { border-radius: 16px; }
+[data-theme="glass"] .room-item:hover { background: rgba(255, 255, 255, .1); }
+[data-theme="glass"] .room-item.active {
+  background: rgba(255, 255, 255, .18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 4px 14px rgba(0, 0, 0, .2), inset 3px 0 0 rgba(var(--accent-rgb), .9);
+}
+[data-theme="glass"] .room-item.drop { background: rgba(var(--accent-rgb), .28); box-shadow: inset 0 0 0 1.5px rgba(var(--accent-rgb), .95); }
+[data-theme="glass"] .room-solo-drop.drop { background: rgba(var(--accent-rgb), .28); border-color: rgba(var(--accent-rgb), .95); }
+[data-theme="glass"] .room-item .room:is(*, :hover, :active) { background: none; box-shadow: none; transform: none; }
+[data-theme="glass"] :is(.room-ghost, .rooms-chip) { -webkit-backdrop-filter: blur(16px) saturate(180%); backdrop-filter: blur(16px) saturate(180%); }
+[data-theme="glass"] .room-ghost { background: rgba(60, 60, 78, .8); border-color: rgba(255, 255, 255, .25); }
+[data-theme="glass"] .room-ghost.ok { border-color: rgba(var(--accent-rgb), .95); }
+[data-theme="glass"] .room-ghost.ok small { color: #fff; }
+[data-theme="glass"] .rooms-chip { background: rgba(255, 255, 255, .12); border-color: rgba(255, 255, 255, .22); }
+[data-theme="glass"] .rooms-chip:is(:hover, .on) { background: rgba(255, 255, 255, .22); border-color: rgba(255, 255, 255, .4); }
+[data-theme="glass"] .room-row.on .room-check { background: rgb(var(--accent-rgb)); border-color: rgb(var(--accent-rgb)); color: #fff; }
 [data-theme="glass"] .room > svg {
   box-sizing: content-box; width: 16px; height: 16px; padding: 6px; border-radius: 9px; flex: none;
   color: #fff;
@@ -300,7 +319,7 @@
 }
 [data-theme="glass"][data-playing="1"] .now-art .sleeve .art { animation: float 6s ease-in-out infinite; }
 [data-theme="glass"] .now-art:hover .sleeve .art { transform: perspective(900px) rotateX(0deg) scale(1.03); animation-play-state: paused; }
-[data-theme="glass"] .now-art { margin-bottom: 64px; }
+[data-theme="glass"] .now-art-slot { margin-bottom: 56px; }
 /* the record reflects too, and sits in the same tilted light as the sleeve */
 [data-theme="glass"] .vinyl .record { -webkit-box-reflect: below 6px linear-gradient(transparent 72%, rgba(255, 255, 255, .14)); box-shadow: 0 30px 70px rgba(0, 0, 0, .55), 0 0 50px rgba(var(--accent-rgb), .18); }
 [data-theme="glass"] .now h1 { font-size: 30px; text-shadow: 0 2px 14px rgba(0, 0, 0, .35); }

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api, isSpotifyLink, sameTitle, type Discovery, type Group, type Household, type Item, type Me, type PlayerQueue, type PlayerState, type Queued, type QueueMode, type SpItem } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, isSpotifyLink, sameTitle, type AiStatus, type Discovery, type Group, type Household, type Item, type Me, type Member, type PlayerQueue, type PlayerState, type Queued, type QueueMode, type SpItem } from "./api";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
@@ -12,9 +12,11 @@ import { SocialProvider, useSocialState, type SongRef } from "./Social";
 
 const song = (i: SpItem): SongRef => ({ title: i.name, artist: i.subtitle, art: i.image });
 import { Sidebar } from "./Sidebar";
-import { Browse } from "./Browse";
+import { Browse, setArtHosts } from "./Browse";
 import { Queue } from "./Queue";
 import { SettingsModal } from "./SettingsModal";
+import type { Mood } from "./Mood";
+import { RoomsPanel, type Grouping, type PanelAnchor } from "./Rooms";
 import { SpotifySetup } from "./SpotifySetup";
 import { About } from "./About";
 import "./App.css";
@@ -30,6 +32,10 @@ export default function App() {
   const [queue, setQueue] = useState<Item[]>([]);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // ---- AI playlists: the Inspiration page, the last playlist it made, and whether a key is set up
+  const [moodOpen, setMoodOpen] = useState<{ start: string | null } | null>(null);
+  const [mood, setMood] = useState<Mood | null>(null);
+  const [ai, setAi] = useState<AiStatus | null>(null);
   const [open, setOpen] = useState<SpItem | null>(null);
   const [searchNonce, setSearchNonce] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -61,6 +67,8 @@ export default function App() {
   }, []);
 
   const group = groups.find((g) => g.id === groupId) ?? null;
+  /** the rooms panel: where it opened from, or closed */
+  const [roomsPanel, setRoomsPanel] = useState<(PanelAnchor & { from: string }) | null>(null);
 
   // ---- systems + rooms
   const [households, setHouseholds] = useState<Household[]>([]);
@@ -74,6 +82,7 @@ export default function App() {
       setHouseholds(d.households);
       setHousehold(d.active);
       setGroups(d.groups);
+      setArtHosts(d.groups.flatMap((g) => g.members.map((m) => m.ip)));
       setDiscoverError(null);
       setGroupId((cur) => {
         // each system remembers its own last room
@@ -130,6 +139,11 @@ export default function App() {
   useEffect(() => {
     if (groupId && household) localStorage.setItem(`group:${household}`, groupId);
   }, [groupId, household]);
+
+  // the AI key belongs to the Sonos system
+  useEffect(() => {
+    if (household) api.aiStatus().then(setAi).catch(() => {});
+  }, [household]);
 
   // ---- spotify account
   const loadAccount = useCallback(async () => {
@@ -227,6 +241,61 @@ export default function App() {
     [toast, refreshState, refreshQueue],
   );
 
+  // ---- which rooms play together
+  const [changing, setChanging] = useState<Grouping["changing"]>({});
+  const live = useRef({ groups, groupId });
+  live.current = { groups, groupId };
+
+  const regroup = useCallback(
+    async (join: Member[], into: Group | null, leave: Member[], done: string) => {
+      if (!join.length && !leave.length) return;
+      const marks = Object.fromEntries([
+        ...join.map((m) => [m.uuid, "join"] as const),
+        ...leave.map((m) => [m.uuid, "leave"] as const),
+      ]);
+      setChanging((c) => ({ ...c, ...marks }));
+      // stay with the music: when the selected group's lead leaves, follow a room that keeps playing
+      const cur = live.current.groups.find((g) => g.id === live.current.groupId);
+      const gone = new Set(leave.map((m) => m.uuid));
+      const stays = cur?.members.find((m) => !gone.has(m.uuid))?.uuid;
+      const follow = cur && gone.has(cur.coordinatorUuid) && stays ? stays : cur?.coordinatorUuid;
+      try {
+        const next = await api.regroup(join.map((m) => m.ip), into?.coordinatorUuid ?? null, leave.map((m) => m.ip));
+        setGroups(next);
+        const mine = next.find((g) => g.members.some((m) => m.uuid === follow));
+        if (mine) setGroupId(mine.id);
+        toast(done);
+      } catch (e) {
+        toast(errText(e), true);
+        await discover();
+      } finally {
+        setChanging((c) => Object.fromEntries(Object.entries(c).filter(([uuid]) => !(uuid in marks))));
+        refreshState();
+        refreshQueue();
+      }
+    },
+    [toast, discover, refreshState, refreshQueue],
+  );
+
+  const grouping = useMemo<Grouping>(() => {
+    const several = (rooms: Member[], one: string, many: string) =>
+      rooms.length === 1 ? `${rooms[0].name} ${one}` : `${rooms.length} rooms ${many}`;
+    return {
+      groups,
+      changing,
+      add: (rooms, into) => {
+        const here = new Set(into.members.map((m) => m.uuid));
+        const lead = into.members.find((m) => m.uuid === into.coordinatorUuid)?.name ?? into.name;
+        const fresh = rooms.filter((m) => !here.has(m.uuid));
+        regroup(fresh, into, [], several(fresh, `now plays with ${lead}`, `now play with ${lead}`));
+      },
+      remove: (rooms) => regroup([], null, rooms, several(rooms, "plays on its own", "play on their own")),
+    };
+  }, [groups, changing, regroup]);
+
+  const toggleRooms = (from: string, el: HTMLElement, side: PanelAnchor["side"]) =>
+    setRoomsPanel((cur) => (cur?.from === from ? null : { from, side, rect: el.getBoundingClientRect() }));
+
   // the logged-in user is the one casting → their Spotify queue is the live one
   const castingMine = connect && !!spQueue && sameTitle(spQueue.current?.name, state?.track?.title);
 
@@ -286,6 +355,12 @@ export default function App() {
     localStorage.setItem("pinned", pinned ? "1" : "0");
     resizeFor(mini, pinned);
   }, [mini, pinned]);
+
+  // what the queue holds after the current song, so suggestions don't repeat it
+  const upcoming = useMemo(
+    () => (state?.queueActive ? queue.slice(state.trackNo, state.trackNo + 15).map((t) => `${t.title}${t.artist ? ` by ${t.artist}` : ""}`) : []),
+    [queue, state?.queueActive, state?.trackNo],
+  );
 
   const nextUp: NextUp =
     state?.queueActive && queue[state.trackNo] // trackNo is 1-based, so this is the following item
@@ -383,9 +458,13 @@ export default function App() {
           state={state}
           fetchedAt={fetchedAt}
           run={run}
+          onRooms={(el) => toggleRooms("topbar", el, "below")}
+          roomsOpen={roomsPanel?.from === "topbar"}
+          moodOpen={!!moodOpen && view === "player"}
+          onMood={() => (setView("player"), setOpen(null), setQuery(""), setMoodOpen((m) => (m && view === "player" ? null : { start: null })))}
           query={query}
           onQuery={(q) => {
-            if (q) setView("player");
+            if (q) (setView("player"), setMoodOpen(null));
             if (!isSpotifyLink(q)) return (setQuery(q), setOpen(null));
             setQuery("");
             api.resolve(q)
@@ -414,6 +493,8 @@ export default function App() {
             groups={groups}
             selected={groupId}
             onSelect={setGroupId}
+            grouping={grouping}
+            onRooms={(id, el) => (setGroupId(id), toggleRooms(id, el, "right"))}
             onRefresh={discover}
             error={discoverError}
             me={me}
@@ -421,7 +502,7 @@ export default function App() {
             saved={saved}
             onForget={(id) => setSaved((s) => s.filter((x) => x.id !== id))}
             open={open}
-            onOpen={(item) => (setOpen(item), setQuery(""))}
+            onOpen={(item) => (setOpen(item), setQuery(""), setMoodOpen(null))}
             onLogin={login}
           />
           <Browse
@@ -436,9 +517,18 @@ export default function App() {
             onSettings={() => setSettingsOpen(true)}
             onLogin={login}
             loggedIn={!!me}
+            ai={ai}
+            moodOpen={moodOpen}
+            onMood={(start) => (setOpen(null), setMoodOpen(start === undefined ? null : { start }))}
+            mood={mood}
+            setMood={setMood}
+            upcoming={upcoming}
           />
           <Queue group={group} state={state} queue={queue} spQueue={spQueue} castingMine={castingMine} run={run} />
         </div>
+        )}
+        {roomsPanel && group && (
+          <RoomsPanel group={group} grouping={grouping} anchor={roomsPanel} onClose={() => setRoomsPanel(null)} />
         )}
         {settingsOpen && (
           <SettingsModal
@@ -456,6 +546,8 @@ export default function App() {
               loadAccount();
             }}
             toast={toast}
+            ai={ai}
+            setAi={setAi}
           />
         )}
         {aboutOpen && <About onClose={() => setAboutOpen(false)} />}
