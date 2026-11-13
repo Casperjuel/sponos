@@ -11,7 +11,18 @@ const API: &str = "https://api.anthropic.com/v1";
 const VERSION: &str = "2026-10-21";
 const MODEL: &str = "claude-opus-5-5";
 
-pub const BAD_KEY: &str = "Anthropic didn't accept the API key. Check it under Settings → AI playlists.";
+/// Vercel AI Gateway speaks the same Messages API, with its own keys and model names.
+const GATEWAY: &str = "https://ai-gateway.vercel.sh/v1";
+const GATEWAY_MODEL: &str = "anthropic/claude-opus-5.5";
+/// only for checking a gateway key: one token from the cheapest model
+const GATEWAY_CHECK_MODEL: &str = "anthropic/claude-haiku-5.5";
+
+pub const BAD_KEY: &str = "The AI key wasn't accepted. Check it under Settings → AI playlists.";
+
+/// Anthropic's own keys start with `sk-ant-`; any other key is taken as a Vercel AI Gateway key.
+fn via_gateway(key: &str) -> bool {
+    !key.starts_with("sk-ant-")
+}
 
 /// A song as Claude names it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -172,8 +183,8 @@ pub async fn check_key(http: &reqwest::Client, key: &str) -> Res<()> {
     if key.starts_with("sk-ant-oat") || key.starts_with("sk-ant-sid") {
         return Err("That is a login token for the Claude apps, not an API key. Create an API key in the Anthropic console (it starts with sk-ant-api).".into());
     }
-    if !key.starts_with("sk-ant-") {
-        return Err("That doesn't look like an Anthropic API key. They start with sk-ant-api.".into());
+    if via_gateway(key) {
+        return check_gateway_key(http, key).await;
     }
     let r = http
         .get(format!("{API}/models?limit=1"))
@@ -195,6 +206,29 @@ pub async fn check_key(http: &reqwest::Client, key: &str) -> Res<()> {
         ),
         403 => format!("Anthropic knows this key but won't let it be used here (\"{said}\"). Check the key's workspace and permissions."),
         _ => format!("Anthropic answered HTTP {status} (\"{said}\"). Try again in a moment."),
+    })
+}
+
+/// The gateway has no free call that proves a key works, so this asks for a single token.
+async fn check_gateway_key(http: &reqwest::Client, key: &str) -> Res<()> {
+    let r = http
+        .post(format!("{GATEWAY}/messages"))
+        .header("x-api-key", key)
+        .header("anthropic-version", VERSION)
+        .json(&json!({ "model": GATEWAY_CHECK_MODEL, "max_tokens": 1, "messages": [user("Hi".into())] }))
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach Vercel AI Gateway: {e}"))?;
+    let status = r.status().as_u16();
+    if status == 200 {
+        return Ok(());
+    }
+    let v: Value = r.json().await.unwrap_or(Value::Null);
+    let said = v["error"]["message"].as_str().unwrap_or("no reason given");
+    Err(match status {
+        401 | 403 => "That key wasn't accepted. Paste an Anthropic API key (it starts with sk-ant-api) or a Vercel AI Gateway key.".into(),
+        _ => format!("Vercel AI Gateway answered HTTP {status} (\"{said}\"). Check the key's credits and budget, then try again."),
     })
 }
 
@@ -287,27 +321,31 @@ async fn ask<T: for<'de> Deserialize<'de>>(
     if via_cli() {
         return ask_cli(system, &messages, &schema, on_text).await;
     }
-    let body = json!({
-        "model": MODEL,
+    let gateway = via_gateway(key);
+    let (api, who) = if gateway { (GATEWAY, "Vercel AI Gateway") } else { (API, "Anthropic") };
+    let mut body = json!({
+        "model": if gateway { GATEWAY_MODEL } else { MODEL },
         "max_tokens": 16000,
         "system": system,
         "messages": messages,
         // picking songs is taste, not a hard problem: low effort keeps the wait short
         "output_config": { "effort": "low", "format": { "type": "json_schema", "schema": schema } },
-        // if a safety classifier declines the request, Anthropic re-runs it on another model
-        "fallbacks": "default",
         "stream": true,
     });
+    if !gateway {
+        // if a safety classifier declines the request, Anthropic re-runs it on another model
+        body["fallbacks"] = json!("default");
+    }
     let mut last = String::new();
     for attempt in 0..3u64 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(800 * attempt)).await;
         }
-        let sent = http
-            .post(format!("{API}/messages"))
-            .header("x-api-key", key)
-            .header("anthropic-version", VERSION)
-            .header("anthropic-beta", "server-side-fallback-2026-07-01")
+        let mut req = http.post(format!("{api}/messages")).header("x-api-key", key).header("anthropic-version", VERSION);
+        if !gateway {
+            req = req.header("anthropic-beta", "server-side-fallback-2026-07-01");
+        }
+        let sent = req
             .json(&body)
             .timeout(Duration::from_secs(120))
             .send()
@@ -315,7 +353,7 @@ async fn ask<T: for<'de> Deserialize<'de>>(
         let r = match sent {
             Ok(r) => r,
             Err(e) => {
-                last = format!("Couldn't reach Anthropic: {e}");
+                last = format!("Couldn't reach {who}: {e}");
                 continue;
             }
         };
@@ -331,12 +369,12 @@ async fn ask<T: for<'de> Deserialize<'de>>(
             408 | 409 | 429 | 500..=599 => {
                 last = match status {
                     429 => "The AI key is being used a lot right now. Try again in a minute.".into(),
-                    _ => "Anthropic is busy right now. Try again in a moment.".into(),
+                    _ => format!("{who} is busy right now. Try again in a moment."),
                 }
             }
             _ => {
                 let msg = v["error"]["message"].as_str().unwrap_or("unknown error");
-                return Err(format!("Anthropic answered HTTP {status}: {msg}"));
+                return Err(format!("{who} answered HTTP {status}: {msg}"));
             }
         }
     }
@@ -503,6 +541,12 @@ mod tests {
         assert_eq!(at(r#""Kids [live]", "artist": "MG"#).tracks.len(), 1);
         let all = draft(whole);
         assert_eq!((all.tracks.len(), all.tracks[1].title.as_str()), (2, "Kids [live]"));
+    }
+
+    #[test]
+    fn only_anthropic_keys_go_to_anthropic() {
+        assert!(!via_gateway("sk-ant-api03-abc"));
+        assert!(via_gateway("vck_abc") && via_gateway("anything-else"));
     }
 
     #[test]

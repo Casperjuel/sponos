@@ -156,7 +156,7 @@ export function Inspiration({ ai, start, mood, setMood, playing, enqueue, enqueu
               playlist you can play right away.
             </p>
             <p className="muted">
-              It needs an Anthropic API key. One person adds it, and {ai?.shared ? "everyone on this Sonos system can use it" : "it stays on this Mac"}.
+              It needs an Anthropic API key or a Vercel AI Gateway key. One person adds it, and {ai?.shared ? "everyone on this Sonos system can use it" : "it stays on this Mac"}.
             </p>
             <button className="btn primary" onClick={onSettings}>Add a key in Settings</button>
           </div>
@@ -372,7 +372,7 @@ export function FollowUps({ song, upcoming, enqueue }: {
           {busy ? <span className="spinner" /> : <Icon.Sparkle width={13} height={13} />}
           {busy ? "Finding songs that fit…" : "What should play next?"}
         </button>
-        {error && <div className="muted small">{error === NO_KEY ? "Add an Anthropic key in Settings first." : error}</div>}
+        {error && <div className="muted small">{error === NO_KEY ? "Add an AI key in Settings first." : error}</div>}
       </div>
     );
 
@@ -444,7 +444,7 @@ export function AiKeySettings({ ai, onChange, toast }: { ai: AiStatus | null; on
     <fieldset>
       <legend>AI playlists</legend>
       <p className="muted">
-        Make a playlist from a sentence and get suggestions for what to play next. This uses Claude, and needs an Anthropic API key.
+        Make a playlist from a sentence and get suggestions for what to play next. This uses Claude, and needs an Anthropic API key or a Vercel AI Gateway key.
       </p>
       {ai?.ready && !editing ? (
         <div className="account">
@@ -458,7 +458,7 @@ export function AiKeySettings({ ai, onChange, toast }: { ai: AiStatus | null; on
         </div>
       ) : (
         <div className="copy-row">
-          <input type="password" value={key} placeholder="sk-ant-…" spellCheck={false} autoComplete="off"
+          <input type="password" value={key} placeholder="sk-ant-… or a Vercel AI Gateway key" spellCheck={false} autoComplete="off"
             onChange={(e) => setKey(e.target.value.trim())}
             onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), key && save(key, "Key saved"))} />
           <button type="button" className="btn" disabled={busy || !key} onClick={() => save(key, "Key saved")}>
