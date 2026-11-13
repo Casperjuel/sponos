@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.14.0](https://github.com/Casperjuel/sponos/compare/v0.13.0...v0.14.0) (2026-11-13)
+
+
+### Features
+
+* "What should play next?" under the playing song suggests follow-up songs with a Play next button ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+* inspiration, describe the music you want and get a playlist ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+* manage rooms in one place, tick rooms in and out of a group with per-room volume, or drag a room onto another in the sidebar ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+
+
+### Bug Fixes
+
+* covers load from another speaker when the group's lead speaker is slow to answer ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+* keep scrollbars clear of the rounded panel corners and show them on hover ([0816350](https://github.com/Casperjuel/sponos/commit/081635061b2eb65dd231981851979630db949d13))
+* play button no longer touches the progress bar (glass theme) ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+* rooms in a group keep their order instead of reshuffling every minute ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+* Spotify setup no longer dead-ends when you are not on the built-in app's user list, and the first steps are clearer ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+* the cover shrinks on small windows so nothing under the song is cut off ([7bbacf1](https://github.com/Casperjuel/sponos/commit/7bbacf1c3d11495140c5c81dc3e7ef739064613f))
+
 ## [0.13.0](https://github.com/Casperjuel/sponos/compare/v0.12.0...v0.13.0) (2026-10-09)
 
 
