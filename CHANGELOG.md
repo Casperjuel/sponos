@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.3](https://github.com/Casperjuel/sponos/compare/v0.14.2...v0.14.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* opening a playlist or Liked Songs shows every song, not just the first 100 ([7314f6a](https://github.com/Casperjuel/sponos/commit/7314f6a60d4c55190b36524be04c04e1e1931627))
+
 ## [0.14.2](https://github.com/Casperjuel/sponos/compare/v0.14.1...v0.14.2) (2026-11-13)
 
 
