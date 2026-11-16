@@ -1,6 +1,6 @@
 [package]
 name = "sponos"
-version = "0.14.3"
+version = "0.14.4"
 description = "Sponos, a Sonos controller with Spotify search"
 authors = ["Casper Juel"]
 edition = "2021"
