@@ -498,6 +498,30 @@ impl Spotify {
         )
     }
 
+    /// Every item of a paged user-library endpoint (`path` without an offset),
+    /// fetched `per` at a time until Spotify says there's no next page.
+    /// Capped at 10,000 items, Spotify's own playlist size limit.
+    async fn all_pages(
+        &self,
+        http: &reqwest::Client,
+        c: &Creds<'_>,
+        path: &str,
+        per: usize,
+    ) -> Res<Vec<Value>> {
+        let mut out = vec![];
+        loop {
+            let v = self
+                .get(http, c, &format!("{path}&offset={}", out.len()), true)
+                .await?;
+            let page = v["items"].as_array().cloned().unwrap_or_default();
+            let n = page.len();
+            out.extend(page);
+            if n < per || v["next"].is_null() || out.len() >= 10_000 {
+                return Ok(out);
+            }
+        }
+    }
+
     /// Tracks inside an album / playlist / artist / liked songs, for drill-in.
     pub async fn children(
         &self,
@@ -517,64 +541,34 @@ impl Spotify {
                 Ok(list(&v["tracks"], |t| track(t, img.as_ref())))
             }
             "playlist" => {
-                let v = match self
-                    .get(
-                        http,
-                        c,
-                        &format!("/playlists/{id}/items?limit=100&market={market}"),
-                        true,
-                    )
-                    .await
-                {
-                    Ok(v) => v,
+                let first = format!("/playlists/{id}/items?limit=100&market={market}");
+                match self.all_pages(http, c, &first, 100).await {
+                    // renamed in 2026: items[].item, older shape items[].track
+                    Ok(items) => Ok(items
+                        .iter()
+                        .filter_map(|i| {
+                            track(
+                                if i["item"].is_object() {
+                                    &i["item"]
+                                } else {
+                                    &i["track"]
+                                },
+                                None,
+                            )
+                        })
+                        .collect()),
                     // dev-mode apps only get contents of playlists the user owns or collaborates on
                     // (and need a login at all) — the public embed player isn't restricted
                     Err(e) if e.contains("403") || e.contains("Log in") => {
-                        return embed_tracks(http, "playlist", id).await
+                        embed_tracks(http, "playlist", id).await
                     }
-                    Err(e) => return Err(e),
-                };
-                // renamed in 2026: items[].item, older shape items[].track
-                Ok(v["items"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|i| {
-                                track(
-                                    if i["item"].is_object() {
-                                        &i["item"]
-                                    } else {
-                                        &i["track"]
-                                    },
-                                    None,
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default())
+                    Err(e) => Err(e),
+                }
             }
             "liked" => {
-                let mut out = vec![];
-                for offset in [0, 50] {
-                    let v = self
-                        .get(
-                            http,
-                            c,
-                            &format!("/me/tracks?limit=50&offset={offset}&market={market}"),
-                            true,
-                        )
-                        .await?;
-                    let page: Vec<_> = v["items"]
-                        .as_array()
-                        .map(|a| a.iter().filter_map(|i| track(&i["track"], None)).collect())
-                        .unwrap_or_default();
-                    let done = page.len() < 50;
-                    out.extend(page);
-                    if done {
-                        break;
-                    }
-                }
-                Ok(out)
+                let first = format!("/me/tracks?limit=50&market={market}");
+                let items = self.all_pages(http, c, &first, 50).await?;
+                Ok(items.iter().filter_map(|i| track(&i["track"], None)).collect())
             }
             // /artists/{id}/top-tracks was removed for dev-mode apps; search by artist instead
             "artist" => {
