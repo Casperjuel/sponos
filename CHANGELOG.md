@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.4](https://github.com/Casperjuel/sponos/compare/v0.14.3...v0.14.4) (2026-11-16)
+
+
+### Bug Fixes
+
+* a song or playlist Sonos can't get from Spotify no longer stops the rest from being added ([cf64513](https://github.com/Casperjuel/sponos/commit/cf64513b2f56d6f0fba7ba6728aa846f7b0e48ca))
+
 ## [0.14.3](https://github.com/Casperjuel/sponos/compare/v0.14.2...v0.14.3) (2026-11-16)
 
 
