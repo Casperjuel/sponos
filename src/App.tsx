@@ -301,9 +301,11 @@ export default function App() {
 
   const report = useCallback(
     (label: string, mode: QueueMode, q: Queued) => {
+      // songs the speakers' Spotify account can't play were left out
+      const left = q.skipped.length ? `. ${q.skipped.length === 1 ? `“${q.skipped[0]}” was` : `${q.skipped.length} songs were`} left out: Sonos couldn't get ${q.skipped.length === 1 ? "it" : "them"} from Spotify.` : "";
       if (q.placed === "top" && mode === "next")
-        toast(`${label} added to the top of the Sonos queue. This room is playing ${state?.source ?? "something else"}, so it plays once you switch to the queue.`);
-      else toast(`${mode === "now" ? "Playing" : mode === "next" ? "Playing next:" : "Added"} ${label}`);
+        toast(`${label} added to the top of the Sonos queue. This room is playing ${state?.source ?? "something else"}, so it plays once you switch to the queue.${left.slice(1)}`);
+      else toast(`${mode === "now" ? "Playing" : mode === "next" ? "Playing next:" : "Added"} ${label}${left}`);
     },
     [toast, state?.source],
   );

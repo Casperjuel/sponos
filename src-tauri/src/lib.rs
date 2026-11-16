@@ -628,7 +628,12 @@ struct Queued {
     /// "afterCurrent" | "top" | "end" — top means the queue wasn't playing,
     /// so "next" could only mean the front of the queue
     placed: &'static str,
+    /// titles Sonos couldn't get from Spotify; the rest were added
+    skipped: Vec<String>,
 }
+
+/// What Sonos answers when it can't fetch the item from Spotify (unknown, private or unavailable).
+const NOT_ON_SONOS: &str = "UPnP error 800";
 
 #[derive(Deserialize)]
 struct QueueItem {
@@ -660,21 +665,55 @@ async fn enqueue_items(app: &App, group: &str, items: &[QueueItem], mode: &str) 
         _ => (1, "top"),
     };
     let (mut first, mut total) = (0, 0);
-    for it in items {
-        let (uri, meta) = l.uri_and_meta(&it.kind, &it.id, &it.title)?;
-        let (f, added) = sonos::enqueue(h, ip, &uri, &meta, at, at != 0).await.map_err(|e| {
-            if l.detected {
-                e
-            } else {
-                format!("{e}. Couldn't detect your Sonos Spotify account — play any Spotify track from the Sonos app once, or set sid/sn in Settings.")
+    let mut skipped = Vec::new();
+    // what is left to add, in order; a playlist Sonos can't open is replaced by its songs
+    let mut todo: std::collections::VecDeque<(String, String, String)> = items
+        .iter()
+        .map(|i| (i.kind.clone(), i.id.clone(), i.title.clone()))
+        .collect();
+    while let Some((kind, id, title)) = todo.pop_front() {
+        let (uri, meta) = l.uri_and_meta(&kind, &id, &title)?;
+        match sonos::enqueue(h, ip, &uri, &meta, at, at != 0).await {
+            Ok((f, added)) => {
+                if first == 0 {
+                    first = f;
+                }
+                total += added;
+                if at != 0 {
+                    at = f + added; // keep the batch in order
+                }
             }
-        })?;
-        if first == 0 {
-            first = f;
+            Err(e) if l.detected && e.contains(NOT_ON_SONOS) => {
+                // The speakers' Spotify account can't see it, e.g. someone's private
+                // playlist. This user's own login can often still list the songs.
+                if kind != "track" {
+                    let s = app.settings.lock().await.clone();
+                    let songs = app
+                        .spotify
+                        .children(h, &creds(&s), &kind, &id, &title, market(&s))
+                        .await
+                        .unwrap_or_default();
+                    if !songs.is_empty() {
+                        for song in songs.into_iter().rev() {
+                            todo.push_front(("track".into(), song.id, song.name));
+                        }
+                        continue;
+                    }
+                }
+                skipped.push(title);
+            }
+            Err(e) if l.detected => return Err(e),
+            Err(e) => {
+                return Err(format!("{e}. Couldn't detect your Sonos Spotify account — play any Spotify track from the Sonos app once, or set sid/sn in Settings."))
+            }
         }
-        total += added;
-        if at != 0 {
-            at = f + added; // keep the batch in order
+    }
+    if total == 0 {
+        if let [only] = skipped.as_slice() {
+            return Err(format!("Sonos couldn't get “{only}” from Spotify. It may be private, or not available to the Spotify account the speakers use."));
+        }
+        if !skipped.is_empty() {
+            return Err("Sonos couldn't get any of these from Spotify. They may not be available to the Spotify account the speakers use.".into());
         }
     }
     if mode == "now" && first > 0 {
@@ -683,6 +722,7 @@ async fn enqueue_items(app: &App, group: &str, items: &[QueueItem], mode: &str) 
     Ok(Queued {
         added: total,
         placed,
+        skipped,
     })
 }
 

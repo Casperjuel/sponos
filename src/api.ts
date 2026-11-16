@@ -153,7 +153,7 @@ export type GroupOverview ={ group: Group; state: PlayerState | null; volumes: R
 export type Floorplan = { image?: string; pins: Record<string, { x: number; y: number }> };
 
 /** where Sonos put it: "top" means the queue wasn't playing, so it can't go after the current song */
-export type Queued = { added: number; placed: "afterCurrent" | "top" | "end" };
+export type Queued = { added: number; placed: "afterCurrent" | "top" | "end"; /** titles Sonos couldn't get from Spotify */ skipped: string[] };
 
 export const isSpotifyLink = (q: string) => /(open\.spotify\.com\/|spotify:)(playlist|album|artist|track)[/:]/.test(q.trim());
 
