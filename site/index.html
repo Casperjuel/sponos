@@ -48,6 +48,22 @@
     }
     .steps b { display: block; margin-bottom: 4px; }
     .steps span { color: var(--dim); font-size: 14px; }
+    .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 14px 0 0; padding: 0; list-style: none; text-align: left; }
+    .features li { padding: 20px; border-radius: 16px; background: rgba(255, 255, 255, .04); border: 1px solid var(--line); }
+    .features b { display: block; margin-bottom: 4px; }
+    .features span { color: var(--dim); font-size: 14px; }
+    .features .tag { display: inline-block; margin-bottom: 12px; padding: 3px 9px; border-radius: 999px; background: rgba(61, 220, 111, .16); color: var(--green); font-size: 12px; font-weight: 700; }
+    h2 { font-size: clamp(24px, 3.4vw, 32px); letter-spacing: -.02em; margin: 72px 0 6px; }
+    .sub { color: var(--dim); margin: 0 auto 22px; max-width: 52ch; font-size: 15px; }
+    .news { max-width: 720px; margin: 0 auto; text-align: left; }
+    .release { padding: 18px 0; border-top: 1px solid var(--line); }
+    .release h3 { margin: 0 0 8px; font-size: 16px; }
+    .release h3 time { color: var(--dim); font-weight: 400; font-size: 13px; margin-left: 8px; }
+    .release ul { margin: 0; padding: 0; list-style: none; }
+    .release li { display: flex; gap: 10px; align-items: baseline; padding: 3px 0; font-size: 15px; }
+    .release li i { flex: none; width: 46px; font-style: normal; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+    .release li.new i { color: var(--green); }
+    .more { display: inline-block; margin-top: 14px; font-size: 14px; color: var(--text); }
     footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 13px; color: var(--dim); }
     footer a { color: var(--text); }
     @media (max-width: 560px) { main { padding-top: 48px; } .shot { margin-top: 40px; } }
@@ -75,6 +91,20 @@
       <li><b>Connect Spotify</b><span>Optional: see your playlists and liked songs. Search works without it.</span></li>
     </ol>
 
+    <h2>Ask for music in your own words</h2>
+    <p class="sub">New in version 0.14. Uses Claude, so it needs an Anthropic API key or a Vercel AI Gateway key, added once for the whole Sonos system.</p>
+    <ul class="features">
+      <li><span class="tag">New</span><b>Describe it, get a playlist</b><span>Write something like "calm Friday afternoon, no vocals" and watch the playlist build song by song. Not quite right? Say what to change.</span></li>
+      <li><span class="tag">New</span><b>What should play next?</b><span>Under the playing song, get a handful of songs that follow it well, each with a reason and a Play next button.</span></li>
+      <li><span class="tag">New</span><b>Rooms in one place</b><span>Tick rooms in and out of a group with a volume slider for each, or drag one room onto another.</span></li>
+    </ul>
+
+    <section id="news" hidden>
+      <h2>What's new</h2>
+      <div class="news" id="releases"></div>
+      <a class="more" href="https://github.com/casperjuel/sponos/releases">All versions on GitHub</a>
+    </section>
+
     <footer>
       Updates install by themselves · <a href="https://github.com/casperjuel/sponos">GitHub</a> · Not affiliated with Sonos or Spotify
     </footer>
@@ -82,13 +112,54 @@
   <script>
     // Link straight to the newest release that actually has the .dmg attached:
     // GitHub's /latest/download redirect is cached and can point at a release that's still building.
+    // "What's new" from the release notes: features and fixes of the last few versions
+    function news(releases) {
+      const el = (tag, text, cls) => {
+        const e = document.createElement(tag);
+        if (text) e.textContent = text;
+        if (cls) e.className = cls;
+        return e;
+      };
+      const list = document.getElementById("releases");
+      let shown = 0;
+      for (const r of releases) {
+        if (r.draft || shown === 5) continue;
+        const items = [];
+        let kind = null;
+        for (const line of (r.body || "").split("\n")) {
+          const head = line.match(/^### (.+)/);
+          if (head) kind = head[1].trim() === "Features" ? "new" : head[1].trim() === "Bug Fixes" ? "fixed" : null;
+          const item = line.match(/^\* (.+)/);
+          if (!item || !kind) continue;
+          const text = item[1].replace(/\s*\(\[[0-9a-f]+\]\([^)]*\)\)\s*$/, "").replace(/\*\*/g, "");
+          items.push([kind, text[0].toUpperCase() + text.slice(1)]);
+        }
+        if (!items.length) continue;
+        const box = el("div", null, "release");
+        const h = el("h3", r.tag_name.replace(/^v/, "Version "));
+        h.append(el("time", new Date(r.published_at || r.created_at).toLocaleDateString("en", { day: "numeric", month: "long", year: "numeric" })));
+        const ul = el("ul");
+        for (const [k, text] of items) {
+          const li = el("li", null, k);
+          li.append(el("i", k === "new" ? "New" : "Fixed"), el("span", text));
+          ul.append(li);
+        }
+        box.append(h, ul);
+        list.append(box);
+        shown++;
+      }
+      if (shown) document.getElementById("news").hidden = false;
+    }
+
     fetch("https://api.github.com/repos/casperjuel/sponos/releases?per_page=10")
       .then((r) => (r.ok ? r.json() : []))
       .then((releases) => {
         const rel = releases.find((r) => !r.draft && !r.prerelease && r.assets.some((a) => a.name === "Sponos.dmg"));
-        if (!rel) return;
-        document.querySelector(".download").href = rel.assets.find((a) => a.name === "Sponos.dmg").browser_download_url;
-        document.getElementById("version").textContent = `Version ${rel.tag_name.replace(/^v/, "")}`;
+        if (rel) {
+          document.querySelector(".download").href = rel.assets.find((a) => a.name === "Sponos.dmg").browser_download_url;
+          document.getElementById("version").textContent = `Version ${rel.tag_name.replace(/^v/, "")}`;
+        }
+        news(releases);
       })
       .catch(() => {});
   </script>
